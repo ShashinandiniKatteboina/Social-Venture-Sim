@@ -1,0 +1,41 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Indie+Flower&family=Poppins:wght@400;600;700&family=Nunito:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-indie: "Indie Flower", cursive;
+  --font-poppins: "Poppins", sans-serif;
+  --font-nunito: "Nunito", sans-serif;
+  --font-playfair: "Playfair Display", serif;
+}
+
+.sandbox-timeline h3 {
+  @apply text-xs flex items-center justify-center font-black uppercase tracking-widest py-2 bg-black/5 rounded-lg mb-4;
+}
+
+.sandbox-timeline strong {
+  @apply text-[#1D9E75] font-black;
+}
+
+.sandbox-timeline p {
+  @apply text-[10px] font-black uppercase tracking-tight mb-2 flex items-center gap-2;
+}
+
+.sandbox-timeline p::before {
+  content: '→';
+  @apply text-[#7F77DD];
+}
+
+.sandbox-timeline ul {
+  @apply space-y-1 mb-4;
+}
+
+.sandbox-timeline li {
+  @apply text-[10px] text-gray-500 font-medium;
+}
+
+.sandbox-timeline li::before {
+  content: '•';
+  @apply text-[#7F77DD] mr-2;
+}
