@@ -52,16 +52,11 @@ import {
   Scale,
   Building2
 } from 'lucide-react';
+import { GoogleGenAI, Type } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
-import { auth } from './firebase';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import type { User } from 'firebase/auth';
-import { LogOut } from 'lucide-react';
-import Login from './Login';
 
 import { 
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell, Tooltip
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer
 } from 'recharts';
 
 // --- Types ---
@@ -111,13 +106,10 @@ interface DecisionHistory {
 
 interface IdeaEvaluation {
   metrics: Metrics;
-  summary: {
-    overview: string;
-    strengths: string[];
-    weaknesses: string[];
-    suggestions: string[];
-  };
-  docId?: string;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
 }
 
 interface SandboxPath {
@@ -125,14 +117,7 @@ interface SandboxPath {
   title: string;
   subtext: string;
   consequence: string;
-  detailedAnalysis: string;
   deltas: Delta[];
-}
-
-interface SandboxResponse {
-  overallSummary: string;
-  pathA: SandboxPath;
-  pathB: SandboxPath;
 }
 
 interface RoadmapStep {
@@ -498,8 +483,9 @@ const STARTUP_ROADMAP: RoadmapPhase[] = [
   }
 ];
 
-// --- AI Service via Backend ---
-const BACKEND_URL = 'http://localhost:5001/api';
+// --- AI Service ---
+
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 interface StartupFile {
   name: string;
@@ -508,66 +494,155 @@ interface StartupFile {
 }
 
 const generateScenario = async (domain: string, city: string, idea: string, files: StartupFile[], metrics: Metrics, history: DecisionHistory[]): Promise<Scenario> => {
-  // BYPASS BACKEND - HARDCODE FIXED SCENARIO
-  return {
-    title: 'Strategic Dilemma',
-    description: 'You need to choose your first marketing channel. Do you go with content or direct sales?',
-    question: 'How will you acquire your first 50 users?',
-    options: [
-      { 
-        id: 'opt1', 
-        title: 'Content Marketing', 
-        subtext: 'Build a community through educational blog posts about property management.', 
-        consequence: 'Slow but steady organic growth with high trust.',
-        deltas: [{ metric: 'userAdoption', value: 10 }, { metric: 'cashRunway', value: -5 }]
-      },
-      { 
-        id: 'opt2', 
-        title: 'Direct Sales', 
-        subtext: 'Cold call property owners in the city to get immediate bookings.', 
-        consequence: 'Rapid growth but high burn rate on commission.',
-        deltas: [{ metric: 'userAdoption', value: 25 }, { metric: 'cashRunway', value: -15 }]
+  const prompt = `You are the AI engine for "FounderSim", a startup simulation game.
+Current Context:
+Domain: ${domain}
+City: ${city}
+Startup Idea: ${idea}
+Current Metrics: ${JSON.stringify(metrics)}
+Past Decisions: ${history.map(h => h.selectedOptionTitle).join(", ")}
+
+Generate a new strategic scenario for the founder. 
+The scenario should be a direct consequence of the current state, the startup idea, or a new market event.
+Provide 3 distinct options with specific metric deltas.
+
+Rules:
+1. One option should be a "safe" bet (small changes).
+2. One option should be a "bold" bet (high risk/high reward).
+3. One option should be a "trade-off" (sacrificing one metric for another).
+4. Metrics are 0-100. Deltas should be between -30 and +30.
+
+Return the response in JSON format.`;
+
+  const parts: any[] = [{ text: prompt }];
+  
+  // Add files to the prompt if they exist
+  files.forEach(file => {
+    parts.push({
+      inlineData: {
+        data: file.data,
+        mimeType: file.mimeType
       }
-    ]
-  };
+    });
+  });
+
+  const result = await genAI.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: [{ role: "user", parts }],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          description: { type: Type.STRING },
+          question: { type: Type.STRING },
+          options: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                title: { type: Type.STRING },
+                subtext: { type: Type.STRING },
+                consequence: { type: Type.STRING },
+                deltas: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      metric: { type: Type.STRING, enum: Object.keys(INITIAL_METRICS) },
+                      value: { type: Type.NUMBER }
+                    },
+                    required: ["metric", "value"]
+                  }
+                }
+              },
+              required: ["id", "title", "subtext", "consequence", "deltas"]
+            }
+          }
+        },
+        required: ["title", "description", "question", "options"]
+      }
+    }
+  });
+
+  if (!result.text) throw new Error("No response from Gemini");
+  return JSON.parse(result.text);
 };
 
 const evaluateIdea = async (domain: string, city: string, idea: string, files: StartupFile[]): Promise<IdeaEvaluation> => {
-  // BYPASS BACKEND - HARDCODE FIXED EVALUATION FOR HOSTMATE
-  return {
-    summary: {
-      overview: "HostMate is a streamlined property management companion specifically designed for rural and first-time homestay hosts who find professional tools too complex.",
-      strengths: [
-        "Solves a real pain point for non-professional hosts in rural areas",
-        "Highly accessible concept with low barrier to entry for first-time hosts",
-        "Sustainable recurring revenue model through property subscriptions",
-        "Perfect scope for an MVP with clear expansion potential into local tourism"
-      ],
-      weaknesses: [
-        "Significant competition from established property management tools",
-        "Low tech adoption rates among older hosts in rural areas may hinder growth",
-        "High dependency on localized pricing data for accurate suggestions",
-        "Requires high level of trust for hosts to automate financial communications"
-      ],
-      suggestions: [
-        "Prioritize WhatsApp integration for easier guest and cleaners communication",
-        "Narrow initial launch to a specific tourist hub to build density and trust",
-        "Offer a free basic tier for single-property hosts to accelerate acquisition",
-        "Invest in localized pricing data to make the pricing suggester a killer feature"
-      ]
-    },
-    metrics: {
-      userAdoption: 38,
-      investorConfidence: 65,
-      cashRunway: 75,
-      teamMorale: 78,
-      founderHealth: 65,
-      socialImpact: 55,
-      revenueHealth: 65,
-      pmf: 30
+  const prompt = `You are a startup analyst for social impact ventures in India.
+Analyze the following startup idea:
+Domain: ${domain}
+City: ${city}
+Idea: ${idea}
+
+Provide an evaluation across 8 metrics (0-100):
+1. User Adoption
+2. Investor Confidence
+3. Cash Runway
+4. Team Morale
+5. Founder Health
+6. Social Impact
+7. Revenue Health
+8. Product-Market Fit
+
+Also provide:
+- A brief summary of the idea.
+- 3 key strengths.
+- 3 key weaknesses.
+- 3 suggestions for improvement.
+
+Return the response in JSON format.`;
+
+  const parts: any[] = [{ text: prompt }];
+  files.forEach(file => {
+    parts.push({
+      inlineData: {
+        data: file.data,
+        mimeType: file.mimeType
+      }
+    });
+  });
+
+  const result = await genAI.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: [{ role: "user", parts }],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          metrics: {
+            type: Type.OBJECT,
+            properties: {
+              userAdoption: { type: Type.NUMBER },
+              investorConfidence: { type: Type.NUMBER },
+              cashRunway: { type: Type.NUMBER },
+              teamMorale: { type: Type.NUMBER },
+              founderHealth: { type: Type.NUMBER },
+              socialImpact: { type: Type.NUMBER },
+              revenueHealth: { type: Type.NUMBER },
+              pmf: { type: Type.NUMBER }
+            },
+            required: ["userAdoption", "investorConfidence", "cashRunway", "teamMorale", "founderHealth", "socialImpact", "revenueHealth", "pmf"]
+          },
+          summary: { type: Type.STRING },
+          strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+          weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+          suggestions: { type: Type.ARRAY, items: { type: Type.STRING } }
+        },
+        required: ["metrics", "summary", "strengths", "weaknesses", "suggestions"]
+      }
     }
-  };
+  });
+
+  if (!result.text) throw new Error("No response from Gemini");
+  return JSON.parse(result.text);
 };
+
+// --- Components ---
 
 const MetricBar = ({ label, value, color, showWarning }: { label: string, value: number, color: string, showWarning?: boolean }) => (
   <div className="mb-3">
@@ -584,7 +659,7 @@ const MetricBar = ({ label, value, color, showWarning }: { label: string, value:
         style={{ backgroundColor: color }}
         initial={{ width: 0 }}
         animate={{ width: `${Math.max(0, Math.min(100, value))}%` }}
-        transition={{ duration: 1, ease: "easeOut" }}
+        transition={{ duration: 0.8, ease: "easeOut" }}
       />
     </div>
   </div>
@@ -592,17 +667,6 @@ const MetricBar = ({ label, value, color, showWarning }: { label: string, value:
 
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
   const [gameState, setGameState] = useState<'onboarding' | 'evaluating' | 'playing' | 'debrief'>('onboarding');
   const [domain, setDomain] = useState<Domain | null>(null);
   const [city, setCity] = useState<City | null>(null);
@@ -624,36 +688,12 @@ export default function App() {
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [showWhatIf, setShowWhatIf] = useState(false);
   const [showSandbox, setShowSandbox] = useState(false);
-  const [isApplyingSandbox, setIsApplyingSandbox] = useState(false);
-  const [beforeSandboxMetrics, setBeforeSandboxMetrics] = useState<Metrics | null>(null);
-  const [analysisStep, setAnalysisStep] = useState(0);
-  const analysisSteps = [
-    "Scanning market competition...",
-    "Analyzing host demographics in " + city + "...",
-    "Predicting user adoption curves...",
-    "Assessing localized pricing models...",
-    "Simulating long-term cash runway...",
-    "Weaving strategic recommendations..."
-  ];
-
-  useEffect(() => {
-    let interval: any;
-    if (isEvaluating) {
-      setAnalysisStep(0);
-      interval = setInterval(() => {
-        setAnalysisStep(prev => (prev + 1) % analysisSteps.length);
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isEvaluating, city]);
   const [showSandboxSummary, setShowSandboxSummary] = useState(false);
   const [showRoadmap, setShowRoadmap] = useState(false);
   const [completedSteps, setCompletedSteps] = useState<string[]>(() => {
     const saved = localStorage.getItem('startup_completed_steps');
     return saved ? JSON.parse(saved) : [];
   });
-  const [startupDocId, setStartupDocId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('startup_phase', currentPhaseIndex.toString());
@@ -664,7 +704,9 @@ export default function App() {
   }, [completedSteps]);
   const [phaseCompleteCelebration, setPhaseCompleteCelebration] = useState<string | null>(null);
   const [lastAppliedSandboxPath, setLastAppliedSandboxPath] = useState<SandboxPath | null>(null);
+  const [beforeSandboxMetrics, setBeforeSandboxMetrics] = useState<Metrics | null>(null);
 
+  // Sandbox chat state
   const [sandboxMessages, setSandboxMessages] = useState<{ role: 'user' | 'ai', content: string, paths?: { pathA: SandboxPath, pathB: SandboxPath } }[]>([]);
   const [sandboxInput, setSandboxInput] = useState('');
   const [isSandboxLoading, setIsSandboxLoading] = useState(false);
@@ -675,6 +717,7 @@ export default function App() {
 
   const currentTheme = THEMES[currentPhaseIndex];
 
+  // Handle phase advancement
   useEffect(() => {
     const phaseIndex = currentPhaseIndex;
     if (phaseIndex >= STARTUP_ROADMAP.length) return;
@@ -684,22 +727,15 @@ export default function App() {
     const isComplete = phaseStepIds.every(id => completedSteps.includes(id));
 
     if (isComplete && phaseIndex < THEMES.length - 1) {
+      // Small delay to let the user see the last checkmark
       setTimeout(() => {
+        setCurrentPhaseIndex(prev => prev + 1);
+        setShowPhaseTransition(true);
         setPhaseCompleteCelebration(currentPhase.title);
-        
         setTimeout(() => {
+          setShowPhaseTransition(false);
           setPhaseCompleteCelebration(null);
-          
-          setTimeout(() => {
-            setCurrentPhaseIndex(prev => prev + 1);
-            setShowPhaseTransition(true);
-            
-            setTimeout(() => {
-              setShowPhaseTransition(false);
-            }, 3000);
-          }, 400);
-          
-        }, 3000);
+        }, 4000);
       }, 500);
     }
   }, [completedSteps, currentPhaseIndex]);
@@ -709,86 +745,41 @@ export default function App() {
       setIsEvaluating(true);
       setGameState('evaluating');
       
-      const startTime = Date.now();
-      
-      // 100% FIXED LOCAL EVALUATION - NO BACKEND
-      setTimeout(() => {
-        const fixedEvaluation: IdeaEvaluation = {
-          summary: {
-            overview: "HostMate is a streamlined property management companion specifically designed for rural and first-time homestay hosts who find professional tools too complex. It bridges the gap between manual management and high-end enterprise software.",
-            strengths: [
-              "Solves a real pain point for non-professional hosts in rural areas",
-              "Highly accessible concept with low barrier to entry for first-time hosts",
-              "Sustainable revenue model via recurring property subscriptions",
-              "Perfect scope for an MVP with clear expansion potential"
-            ],
-            weaknesses: [
-              "Significant competition from established property management software",
-              "Low tech adoption rates among older hosts in rural areas",
-              "Dependency on high-quality localized pricing data",
-              "Requires high level of trust and consistent user engagement"
-            ],
-            suggestions: [
-              "Prioritize WhatsApp integration for easier guest communication",
-              "Narrow your initial launch to a specific tourist hub",
-              "Implement a free basic tier to accelerate user acquisition",
-              "Invest in localized pricing data to improve the suggester feature"
-            ]
-          },
-          metrics: {
-            userAdoption: 38,
-            investorConfidence: 65,
-            cashRunway: 75,
-            teamMorale: 78,
-            founderHealth: 65,
-            socialImpact: 55,
-            revenueHealth: 65,
-            pmf: 30
-          }
-        };
+      if (isNewUser) {
+        setShowWelcome(true);
+        setTimeout(() => setShowWelcome(false), 3500);
+        setIsNewUser(false);
+      }
 
-        setEvaluation(fixedEvaluation);
-        setMetrics(fixedEvaluation.metrics);
+      try {
+        const evalResult = await evaluateIdea(domain, city, startupIdea, startupFiles);
+        setEvaluation(evalResult);
+        setMetrics(evalResult.metrics);
+      } catch (error) {
+        console.error("Failed to evaluate idea:", error);
+      } finally {
         setIsEvaluating(false);
-      }, 6000);
+      }
     }
   };
 
-  const handleProceedToSimulation = () => {
+  const handleProceedToSimulation = async () => {
     if (domain && city && startupIdea.trim()) {
       setGameState('playing');
-      fetchNextScenario();
+      await fetchNextScenario(domain, city, startupIdea, startupFiles, metrics, []);
     }
   };
 
-  const fetchNextScenario = () => {
+  const fetchNextScenario = async (d: string, c: string, idea: string, files: StartupFile[], m: Metrics, h: DecisionHistory[]) => {
     setIsLoadingScenario(true);
-    // 100% STATIC SCENARIO - NO BACKEND
-    setTimeout(() => {
-      const fixedScenario: Scenario = {
-        title: 'Strategic Dilemma',
-        description: 'HostMate has its first 10 organic signups from rural homestays. To grow, you need to choose your primary acquisition channel.',
-        question: 'How will you acquire your next 50 users in rural areas?',
-        options: [
-          { 
-            id: 'opt1', 
-            title: 'WhatsApp Referral Loop', 
-            subtext: 'Incentivize existing hosts to refer neighbors via WhatsApp.', 
-            consequence: 'Rapid, trust-based growth with low costs but depends on host social circles.',
-            deltas: [{ metric: 'userAdoption', value: 20 }, { metric: 'cashRunway', value: -5 }]
-          },
-          { 
-            id: 'opt2', 
-            title: 'Local Hub Partnership', 
-            subtext: 'Partner with local tourism boards and rural cooperatives.', 
-            consequence: 'Higher credibility and bulk acquisition, but takes longer to negotiate.',
-            deltas: [{ metric: 'investorConfidence', value: 15 }, { metric: 'userAdoption', value: 10 }]
-          }
-        ]
-      };
-      setCurrentScenario(fixedScenario);
+    try {
+      const scenario = await generateScenario(d, c, idea, files, m, h);
+      setCurrentScenario(scenario);
+    } catch (error) {
+      console.error("Failed to generate scenario:", error);
+    } finally {
       setIsLoadingScenario(false);
-    }, 1500);
+    }
   };
 
   const handleOptionClick = (option: Option) => {
@@ -799,6 +790,7 @@ export default function App() {
   const handleNextStage = async () => {
     if (!selectedOption || !currentScenario || !domain || !city) return;
 
+    // Save to history
     const decision: DecisionHistory = {
       scenarioTitle: currentScenario.title,
       selectedOptionId: selectedOption.id,
@@ -810,27 +802,19 @@ export default function App() {
     const newHistory = [...history, decision];
     setHistory(newHistory);
 
+    // Update metrics
     const newMetrics = { ...metrics };
     selectedOption.deltas.forEach(d => {
       newMetrics[d.metric] = Math.max(0, Math.min(100, newMetrics[d.metric] + d.value));
     });
     setMetrics(newMetrics);
 
-    if (startupDocId) {
-      try {
-        await fetch(`${BACKEND_URL}/history`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ startupDocId, decision, newMetrics })
-        });
-      } catch (e) { console.error("Firebase error logging history:", e); }
-    }
-
+    // Reset selection and fetch next
     setSelectedOptionId(null);
     if (newHistory.length >= 10) {
       setGameState('debrief');
     } else {
-      fetchNextScenario();
+      await fetchNextScenario(domain, city, startupIdea, startupFiles, newMetrics, newHistory);
     }
   };
 
@@ -842,83 +826,111 @@ export default function App() {
     setSandboxMessages(prev => [...prev, { role: 'user', content: userMsg }]);
     setIsSandboxLoading(true);
 
-    setTimeout(() => {
-      const data = {
-        overallSummary: "Your strategic shift will define the trajectory of HostMate for the next 6-8 weeks.",
-        pathA: {
-          id: 'b2b',
-          title: 'Switch to B2B Model',
-          subtext: 'Partner with property developers and rural resorts.',
-          consequence: 'Higher revenue stability, slower user acquisition.',
-          detailedAnalysis: `### PATH A — Switch to B2B
+    try {
+      const prompt = `You are the "FounderSim" Sandbox AI. 
+      The user wants to test a strategic change to their startup.
+      Context:
+      Domain: ${domain}
+      City: ${city}
+      Idea: ${startupIdea}
+      Current Metrics: ${JSON.stringify(metrics)}
 
-**Phase 1 — Validate Demand (Week 1–2)**
-* **Circumstances**: Direct outreach to regional property management firms.
-* **Metrics + Evaluation**: 10+ leads → strong demand.
+      User's requested change: "${userMsg}"
 
-**Phase 2 — Product Hardening (Week 3–5)**
-* **Circumstances**: Refactor tools into a multi-property dashboard.
-* **Metrics + Evaluation**: 80% feature adoption by early adopters.
+      Evaluate two parallel timelines:
+      Path A: The user implements the requested change.
+      Path B: The user stays the course (Status Quo).
 
-**Phase 3 — Scale Acquisition (Week 6–8)**
-* **Circumstances**: Hire first corporate sales rep.
-* **Metrics + Evaluation**: ₹50K MRR → viable path.`,
-          deltas: [
-            { metric: 'revenueHealth', value: 20 },
-            { metric: 'userAdoption', value: -10 },
-            { metric: 'investorConfidence', value: 15 }
-          ]
-        },
-        pathB: {
-          id: 'b2c_stay',
-          title: 'Continue B2C Growth',
-          subtext: 'Double down on the individual rural host MVP.',
-          consequence: 'Viral adoption potential, but higher churn risk.',
-          detailedAnalysis: `### PATH B — Continue B2C
+      For each path, provide:
+      1. A descriptive title.
+      2. A brief consequence explanation.
+      3. Specific metric deltas (0-100 scale, deltas between -30 and +30).
 
-**Phase 1 — Community Drive (Week 1–2)**
-* **Circumstances**: Launch WhatsApp-driven referral program.
-* **Metrics + Evaluation**: 50+ new hosts → high organic growth.
+      Return the response in JSON format with keys "pathA" and "pathB".`;
 
-**Phase 2 — Viral Loop (Week 3–5)**
-* **Circumstances**: Gamify host reviews and check-in efficiency.
-* **Metrics + Evaluation**: 30% weekly user retention.
-
-**Phase 3 — Monetization (Week 6–8)**
-* **Circumstances**: Transition first 100 users to paid subscription.
-* **Metrics + Evaluation**: 5% conversion rate → validated monetization.`,
-          deltas: [
-            { metric: 'userAdoption', value: 25 },
-            { metric: 'revenueHealth', value: -5 },
-            { metric: 'cashRunway', value: -10 }
-          ]
+      const result = await genAI.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              pathA: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  subtext: { type: Type.STRING },
+                  consequence: { type: Type.STRING },
+                  deltas: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        metric: { type: Type.STRING, enum: Object.keys(INITIAL_METRICS) },
+                        value: { type: Type.NUMBER }
+                      },
+                      required: ["metric", "value"]
+                    }
+                  }
+                },
+                required: ["id", "title", "subtext", "consequence", "deltas"]
+              },
+              pathB: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  subtext: { type: Type.STRING },
+                  consequence: { type: Type.STRING },
+                  deltas: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        metric: { type: Type.STRING, enum: Object.keys(INITIAL_METRICS) },
+                        value: { type: Type.NUMBER }
+                      },
+                      required: ["metric", "value"]
+                    }
+                  }
+                },
+                required: ["id", "title", "subtext", "consequence", "deltas"]
+              }
+            },
+            required: ["pathA", "pathB"]
+          }
         }
-      };
+      });
 
+      if (!result.text) throw new Error("No response from Gemini");
+      const data = JSON.parse(result.text);
+      
       setSandboxMessages(prev => [...prev, { 
         role: 'ai', 
-        content: `I've analyzed two possible futures for HostMate. Compare the paths below.`,
-        paths: { pathA: data.pathA as SandboxPath, pathB: data.pathB as SandboxPath }
+        content: `I've analyzed two possible futures based on your request. Compare the paths below.`,
+        paths: { pathA: data.pathA, pathB: data.pathB }
       }]);
-      setPendingSandboxPaths({ pathA: data.pathA as SandboxPath, pathB: data.pathB as SandboxPath });
+      setPendingSandboxPaths({ pathA: data.pathA, pathB: data.pathB });
+    } catch (error) {
+      console.error("Sandbox evaluation failed:", error);
+      setSandboxMessages(prev => [...prev, { role: 'ai', content: "I'm sorry, I couldn't evaluate that change. Please try again." }]);
+    } finally {
       setIsSandboxLoading(false);
-    }, 1500);
+    }
   };
 
-  const applySandboxPath = async (path: SandboxPath) => {
-    // CAPTURE CURRENT METRICS IMMEDIATELY
-    setBeforeSandboxMetrics({ ...metrics });
-    setLastAppliedSandboxPath(path);
-    setIsApplyingSandbox(true);
-    setShowSandbox(false);
+  const applySandboxPath = (path: SandboxPath) => {
+    setIsTransitioning(true);
     
-    // 3-second simulation delay as requested by user
-    setTimeout(async () => {
+    setTimeout(() => {
       const newMetrics = { ...metrics };
       path.deltas.forEach(d => {
         newMetrics[d.metric] = Math.max(0, Math.min(100, newMetrics[d.metric] + d.value));
       });
       
+      // Record sandbox decision in history
       const decision: DecisionHistory = {
         scenarioTitle: "Sandbox Intervention",
         selectedOptionId: "sandbox_" + Date.now(),
@@ -929,23 +941,15 @@ export default function App() {
       };
       setHistory(prev => [...prev, decision]);
       
+      setBeforeSandboxMetrics({ ...metrics });
+      setLastAppliedSandboxPath(path);
       setMetrics(newMetrics);
-      
-      if (startupDocId) {
-        try {
-          await fetch(`${BACKEND_URL}/history`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ startupDocId, decision, newMetrics })
-          });
-        } catch (e) { console.error("Firebase error logging path apply:", e); }
-      }
-
+      setShowSandbox(false);
       setShowSandboxSummary(true);
       setSandboxMessages([]);
       setPendingSandboxPaths(null);
-      setIsApplyingSandbox(false);
-    }, 3000);
+      setIsTransitioning(false);
+    }, 800);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -990,18 +994,6 @@ export default function App() {
 
   // --- Render Helpers ---
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-[#0F0F1A] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-[#7F77DD]" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Login onLogin={() => {}} />;
-  }
-
   if (gameState === 'onboarding') {
     return (
       <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center p-6 font-sans text-[13px]">
@@ -1010,16 +1002,6 @@ export default function App() {
           animate={{ opacity: 1, y: 0 }}
           className="max-w-md w-full bg-white border-[0.5px] border-gray-200 rounded-2xl p-8 shadow-sm"
         >
-          {error && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-700">
-              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-              <p className="text-xs leading-relaxed">{error}</p>
-              <button onClick={() => setError(null)} className="ml-auto">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
-
           <div className="text-center mb-8">
             <h1 className="text-2xl font-bold tracking-tight text-gray-900 mb-2">FounderSim</h1>
             <p className="text-muted-foreground text-xs">The social impact startup simulation.</p>
@@ -1168,15 +1150,6 @@ export default function App() {
           >
             <FlaskConical size={12} /> Test a change
           </button>
-          
-          {evaluation && (
-            <div className="mt-6 pt-6 border-t border-gray-100">
-              <h3 className="text-[9px] uppercase tracking-widest font-bold text-gray-400 mb-3">Strategy Summary</h3>
-              <div className="text-[11px] text-gray-600 leading-relaxed font-medium bg-gray-50 p-3 rounded-xl border-[0.5px] border-gray-100">
-                <ReactMarkdown>{evaluation.summary.overview}</ReactMarkdown>
-              </div>
-            </div>
-          )}
           {history.length > 0 && (
             <button 
               onClick={() => setShowWhatIf(true)}
@@ -1185,15 +1158,6 @@ export default function App() {
               <History size={12} /> What if?
             </button>
           )}
-
-          <div className="mt-4 pt-4 border-t border-gray-100">
-            <button 
-              onClick={() => signOut(auth)}
-              className="w-full py-2 px-3 text-red-500 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-red-50 transition-colors"
-            >
-              <LogOut size={12} /> Log Out
-            </button>
-          </div>
         </div>
       </aside>
 
@@ -1208,329 +1172,66 @@ export default function App() {
             transition={{ duration: 0.8 }}
             className="max-w-3xl mx-auto"
           >
-            {isApplyingSandbox ? (
-              <motion.div 
-                key="sandbox-applying"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex flex-col items-center justify-center py-24 text-center"
-              >
-                <div className="relative mb-8">
-                  <div className="absolute inset-0 bg-[#7F77DD] blur-xl opacity-20 animate-pulse rounded-full" />
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-                  >
-                    <Rocket className="w-16 h-16 text-[#7F77DD]" />
-                  </motion.div>
-                </div>
-                <h2 className={`text-3xl font-black mb-4 ${currentTheme.id === 'idea' ? 'text-white' : 'text-gray-900'}`}>
-                  Simulating Strategic Shift...
-                </h2>
-                <p className="text-muted-foreground font-medium text-sm max-w-xs mx-auto">
-                  Applying selected timeline to your current core startup trajectory.
-                </p>
-              </motion.div>
-            ) : showSandboxSummary && lastAppliedSandboxPath && beforeSandboxMetrics ? (
-              <motion.div 
-                key="sandbox-summary"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ type: "spring", damping: 20, stiffness: 100 }}
-                className="space-y-8"
-              >
-                 <header className="text-center mb-12">
-                  <motion.div 
-                    initial={{ y: -20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    transition={{ delay: 0.1 }}
-                    className="inline-flex items-center gap-2 px-4 py-1.5 bg-gray-900 text-white text-[10px] font-bold rounded-full uppercase tracking-widest mb-6 shadow-xl shadow-black/20"
-                  >
-                    <Rocket size={12} strokeWidth={3} /> Strategic Pivot Selected
-                  </motion.div>
-                  <h1 className="text-4xl font-black tracking-tight text-gray-900 mb-2 leading-tight">
-                    {lastAppliedSandboxPath.title}
-                  </h1>
-                  <p className="text-muted-foreground text-[10px] uppercase tracking-widest font-black opacity-40">Trajectory Results</p>
-                </header>
-
-              <div className="max-w-4xl mx-auto space-y-12 pb-12">
-                {/* 1. THE PIE CHART (Refined Metrics) */}
-                <motion.div 
-                  initial={{ x: -20, opacity: 0 }}
-                  animate={{ x: 0, opacity: 1 }}
-                  transition={{ delay: 0.2 }}
-                  className="bg-white border-[0.5px] border-gray-200 p-12 rounded-[48px] shadow-2xl flex flex-col items-center relative overflow-hidden"
-                >
-                  <div className="absolute top-0 right-0 w-80 h-80 bg-[#7F77DD]/5 rounded-full -mr-40 -mt-40 blur-3xl" />
-                  
-                  <div className="text-center mb-10">
-                    <h3 className="text-gray-900 font-black text-xs uppercase tracking-widest mb-1">Refined Evaluation Metric</h3>
-                    <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest opacity-60">Pulse Distribution Post-Pivot</p>
-                  </div>
-
-                  <div className="h-[450px] w-full relative">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={[
-                            { name: 'User Adoption', value: metrics.userAdoption },
-                            { name: 'Investor Conf.', value: metrics.investorConfidence },
-                            { name: 'Cash Runway', value: metrics.cashRunway },
-                            { name: 'PMFit', value: metrics.pmf },
-                            { name: 'Team Morale', value: metrics.teamMorale },
-                            { name: 'Founder Health', value: metrics.founderHealth },
-                            { name: 'Social Impact', value: metrics.socialImpact },
-                            { name: 'Revenue', value: metrics.revenueHealth }
-                          ]}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={100}
-                          outerRadius={160}
-                          paddingAngle={6}
-                          dataKey="value"
-                          stroke="none"
-                        >
-                          {[
-                            '#4F46E5', '#10B981', '#F59E0B', '#EC4899', 
-                            '#8B5CF6', '#EF4444', '#06B6D4', '#111827'
-                          ].map((entry, index) => (
-                            <Cell 
-                              key={`cell-${index}`} 
-                              fill={entry} 
-                              className="hover:scale-105 transition-transform cursor-pointer"
-                              style={{ filter: 'drop-shadow(0 8px 12px rgba(0,0,0,0.1))' }}
-                            />
-                          ))}
-                        </Pie>
-                        <RechartsTooltip 
-                          content={({ active, payload }) => {
-                            if (active && payload && payload.length) {
-                              return (
-                                <div className="bg-white p-6 rounded-3xl shadow-2xl border border-gray-100 flex flex-col gap-1 ring-8 ring-black/5">
-                                  <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Real-Time Pulse</span>
-                                  <span className="text-sm font-black text-gray-900 uppercase tracking-tight">{payload[0].name}</span>
-                                  <span className="text-3xl font-black" style={{ color: payload[0].payload.fill }}>{payload[0].value}%</span>
-                                </div>
-                              );
-                            }
-                            return null;
-                          }}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="text-center">
-                        <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Global Health</div>
-                        <div className="text-6xl font-black text-gray-900 tracking-tighter">
-                          {Math.round(Object.values(metrics).reduce((a, b) => a + b, 0) / 8)}%
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* LEGEND DOTS */}
-                  <div className="mt-12 flex flex-wrap justify-center gap-4 max-w-lg">
-                    {[
-                      { name: 'User', color: '#4F46E5' },
-                      { name: 'Investor', color: '#10B981' },
-                      { name: 'Cash', color: '#F59E0B' },
-                      { name: 'PMF', color: '#EC4899' },
-                      { name: 'Team', color: '#8B5CF6' },
-                      { name: 'Founder', color: '#EF4444' },
-                      { name: 'Impact', color: '#06B6D4' },
-                      { name: 'Revenue', color: '#111827' }
-                    ].map((item, i) => (
-                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 rounded-full border border-gray-100">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
-                        <span className="text-[9px] font-black text-gray-600 uppercase tracking-tight">{item.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </motion.div>
-
-                {/* 2. THE CONSEQUENCES (TIMELINE) */}
-                <motion.div 
-                  initial={{ y: 30, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: 0.4 }}
-                  className="bg-gray-50 border-[0.5px] border-gray-200 p-12 rounded-[56px] shadow-xl relative overflow-hidden"
-                >
-                  <div className="flex items-center justify-between mb-12">
-                    <div>
-                      <h3 className="text-gray-900 font-black text-xl mb-1 tracking-tight">The Resulting Consequences</h3>
-                      <p className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">6–8 Weeks Strategic Execution Plan</p>
-                    </div>
-                    <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-gray-100">
-                      <Target className="text-[#7F77DD]" size={32} />
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="p-8 bg-white/60 border border-white/80 rounded-[32px] shadow-sm backdrop-blur-sm">
-                      <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2 px-3 py-1 bg-gray-50 border border-gray-100 rounded-full w-fit">
-                        <div className="w-1.5 h-1.5 bg-[#7F77DD] rounded-full animate-pulse" /> Final Strategic Narrative
-                      </div>
-                      <p className="text-2xl font-black text-gray-900 leading-tight mb-8">
-                        {lastAppliedSandboxPath.consequence}
-                      </p>
-                      
-                      <div className="text-gray-900 text-sm sandbox-timeline-v2">
-                         <ReactMarkdown>
-                           {lastAppliedSandboxPath.detailedAnalysis}
-                         </ReactMarkdown>
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
-              </div>
-
-
-              <motion.div 
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.5 }}
-                className="flex justify-center pt-6"
-              >
-                <button 
-                  onClick={() => setShowSandboxSummary(false)}
-                  className="px-12 py-5 bg-gray-900 text-white rounded-2xl font-black text-lg shadow-2xl shadow-black/20 hover:bg-black hover:scale-105 transition-all flex items-center justify-center gap-3"
-                >
-                  Continue Simulation <ChevronRight size={20} />
-                </button>
-              </motion.div>
-            </motion.div>
-          ) : gameState === 'evaluating' ? (
+            {gameState === 'evaluating' ? (
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               className="space-y-8"
             >
               {isEvaluating ? (
-                <div className="flex flex-col items-center justify-center py-24 text-center">
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                    className="mb-8"
-                  >
-                    <Loader2 className="w-16 h-16" style={{ color: currentTheme.primary }} />
-                  </motion.div>
-                  <motion.h2 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`text-3xl font-black tracking-tight ${currentTheme.id === 'idea' ? 'text-white' : 'text-gray-900'}`}
-                  >
-                    Evaluating the idea...
-                  </motion.h2>
-                  <motion.p 
-                    key={analysisStep}
-                    initial={{ opacity: 0, y: 5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -5 }}
-                    className="text-muted-foreground text-sm mt-3 max-w-xs mx-auto font-medium"
-                  >
-                    {analysisSteps[analysisStep]}
-                  </motion.p>
+                <div className="flex flex-col items-center justify-center py-20 text-center">
+                  <Loader2 className="w-12 h-12 animate-spin mb-6" style={{ color: currentTheme.primary }} />
+                  <h2 className="text-2xl font-bold text-gray-900">Analyzing your startup idea...</h2>
+                  <p className="text-muted-foreground text-sm mt-2 max-w-xs mx-auto">Gemini is evaluating your concept against the local market in {city}.</p>
                 </div>
               ) : evaluation && (
                 <div className="space-y-8">
-                  <div className={`border-[0.5px] p-10 rounded-[40px] shadow-2xl relative overflow-hidden mb-8 ${
-                    currentTheme.id === 'idea' ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
-                  }`}>
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-[#7F77DD]/10 to-transparent rounded-full -mr-32 -mt-32 blur-3xl" />
-                    <h3 className="text-gray-400 font-bold text-[10px] uppercase tracking-widest mb-6 flex items-center gap-2">
-                       <ShieldCheck size={14} className="text-[#7F77DD]" /> 
-                       Strategic Overview
-                    </h3>
-                    <div className={`text-xl leading-[1.6] font-medium italic relative z-10 ${
-                      currentTheme.id === 'idea' ? 'text-gray-100' : 'text-gray-900'
-                    }`}>
-                      <ReactMarkdown>{evaluation.summary.overview}</ReactMarkdown>
-                    </div>
+                  <header className="text-center mb-10">
+                    <h1 className="text-3xl font-bold tracking-tight text-gray-900 mb-2">Initial Evaluation</h1>
+                    <p className="text-muted-foreground text-sm uppercase tracking-widest font-bold">Projected Starting State</p>
+                  </header>
+
+                  <div className="bg-white border-[0.5px] border-gray-200 p-8 rounded-3xl shadow-sm">
+                    <h3 className="text-gray-400 font-bold text-[10px] uppercase tracking-widest mb-4">Idea Summary</h3>
+                    <p className="text-gray-900 text-lg leading-relaxed font-medium">{evaluation.summary}</p>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-6">
-                    {[
-                      { 
-                        title: 'Strengths', 
-                        icon: CheckCircle2, 
-                        items: evaluation.summary.strengths, 
-                        color: '#1D9E75', 
-                        bg: 'bg-[#E1F5EE]', 
-                        darkBg: 'bg-[#1D9E75]/10',
-                        darkBorder: 'border-[#1D9E75]/30'
-                      },
-                      { 
-                        title: 'Weaknesses', 
-                        icon: AlertTriangle, 
-                        items: evaluation.summary.weaknesses, 
-                        color: '#E24B4A', 
-                        bg: 'bg-[#FCE8E8]', 
-                        darkBg: 'bg-[#E24B4A]/10',
-                        darkBorder: 'border-[#E24B4A]/30'
-                      },
-                      { 
-                        title: 'Suggestions', 
-                        icon: Target, 
-                        items: evaluation.summary.suggestions, 
-                        color: currentTheme.primary, 
-                        bg: 'bg-[#F0EDFF]', 
-                        darkBg: 'bg-[#7F77DD]',
-                        darkBorder: 'border-[#7F77DD]'
-                      }
-                    ].map((section, idx) => (
-                      <motion.div
-                        key={section.title}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.1 * idx }}
-                        whileHover={{ scale: 1.02, translateY: -5 }}
-                        className={`p-8 rounded-[32px] border-[0.5px] transition-all shadow-lg hover:shadow-2xl group relative overflow-hidden ${
-                          currentTheme.id === 'idea' 
-                            ? `${section.darkBg} ${section.darkBorder}` 
-                            : `${section.bg} border-transparent`
-                        }`}
-                        style={currentTheme.id === 'idea' ? {} : { borderLeft: `4px solid ${section.color}` }}
-                      >
-                        <div className="flex items-center gap-4 mb-6">
-                          <div className="p-3 rounded-2xl bg-white shadow-sm group-hover:scale-110 transition-transform" style={{ color: section.color }}>
-                            <section.icon size={24} />
-                          </div>
-                          <h3 className="font-black text-lg uppercase tracking-tight" style={{ color: section.color }}>
-                            {section.title}
-                          </h3>
-                        </div>
-                        <ul className="space-y-4">
-                          {section.items.map((item, i) => (
-                            <li key={i} className={`flex gap-3 font-medium ${
-                              currentTheme.id === 'idea' 
-                                ? (section.title === 'Suggestions' ? 'text-white' : 'text-white/90') 
-                                : 'text-gray-900 shadow-sm shadow-black/30'
-                            }`}>
-                              <span className={`opacity-70 mt-1 ${section.title === 'Suggestions' && currentTheme.id === 'idea' ? 'text-white' : ''}`} style={section.title === 'Suggestions' && currentTheme.id === 'idea' ? {} : { color: section.color }}>•</span> {item}
-                            </li>
-                          ))}
-                        </ul>
-                      </motion.div>
-                    ))}
-                  </div>
-
-                  <div className={`mt-8 pt-8 border-t flex items-center justify-center gap-4 ${
-                    currentTheme.id === 'idea' ? 'border-white/10' : 'border-gray-100'
-                  }`}>
-                    <div className="flex -space-x-2">
-                      {[1, 2, 3].map(i => (
-                        <div key={i} className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-[10px] font-bold ${
-                          currentTheme.id === 'idea' ? 'border-[#0F0F1A] bg-white/10 text-white/40' : 'border-white bg-gray-100 text-gray-400'
-                        }`}>
-                           AI
-                        </div>
-                      ))}
+                  <div className="grid md:grid-cols-3 gap-6">
+                    <div className="bg-[#E1F5EE] border-[0.5px] border-[#1D9E75] p-6 rounded-2xl">
+                      <h3 className="text-[#0F6E56] font-bold text-[10px] uppercase tracking-widest mb-4 flex items-center gap-2">
+                        <CheckCircle2 size={14} /> Strengths
+                      </h3>
+                      <ul className="space-y-3">
+                        {evaluation.strengths.map((s, i) => (
+                          <li key={i} className="text-[#0F6E56] font-medium flex gap-2">
+                            <span className="opacity-50">•</span> {s}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                    <div className="text-[11px] text-muted-foreground font-bold uppercase tracking-wider">
-                      Evaluation powered by FounderSim Strategy Engine
+                    <div className="bg-[#FCE8E8] border-[0.5px] border-[#E24B4A] p-6 rounded-2xl">
+                      <h3 className="text-[#A91D1D] font-bold text-[10px] uppercase tracking-widest mb-4 flex items-center gap-2">
+                        <XCircle size={14} /> Weaknesses
+                      </h3>
+                      <ul className="space-y-3">
+                        {evaluation.weaknesses.map((w, i) => (
+                          <li key={i} className="text-[#A91D1D] font-medium flex gap-2">
+                            <span className="opacity-50">•</span> {w}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="p-6 rounded-2xl border-[0.5px]" style={{ backgroundColor: `${currentTheme.primary}10`, borderColor: currentTheme.primary }}>
+                      <h3 className="font-bold text-[10px] uppercase tracking-widest mb-4 flex items-center gap-2" style={{ color: currentTheme.primary }}>
+                        <Target size={14} /> Suggestions
+                      </h3>
+                      <ul className="space-y-3">
+                        {evaluation.suggestions.map((s, i) => (
+                          <li key={i} className="font-medium flex gap-2" style={{ color: currentTheme.primary }}>
+                            <span className="opacity-50">•</span> {s}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   </div>
 
@@ -1561,6 +1262,175 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </motion.div>
+          ) : showSandboxSummary && lastAppliedSandboxPath && beforeSandboxMetrics ? (
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ type: "spring", damping: 20, stiffness: 100 }}
+              className="space-y-8"
+            >
+              <header className="text-center mb-10">
+                <motion.div 
+                  initial={{ y: -20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.2 }}
+                  className="inline-flex items-center gap-2 px-4 py-1.5 bg-gradient-to-r from-[#7F77DD] to-[#3C3489] text-white text-[10px] font-bold rounded-full uppercase tracking-widest mb-4 shadow-lg shadow-[#7F77DD]/20"
+                >
+                  <FlaskConical size={12} /> Strategy Refined
+                </motion.div>
+                <h1 className="text-4xl font-black tracking-tight text-gray-900 mb-2">Refined Metrics Evaluation</h1>
+                <p className="text-muted-foreground text-sm uppercase tracking-widest font-bold">The {lastAppliedSandboxPath.title} Trajectory</p>
+              </header>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <motion.div 
+                  initial={{ x: -20, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  transition={{ delay: 0.3 }}
+                  className="bg-white border-[0.5px] border-gray-200 p-8 rounded-3xl shadow-xl flex flex-col relative overflow-hidden"
+                >
+                  <div className="absolute top-0 right-0 w-32 h-32 rounded-full -mr-16 -mt-16 blur-3xl" style={{ backgroundColor: `${currentTheme.primary}10` }} />
+                  
+                  <h3 className="text-gray-400 font-bold text-[10px] uppercase tracking-widest mb-4">Strategic Outcome</h3>
+                  <p className="text-gray-900 text-xl leading-relaxed font-bold mb-6">{lastAppliedSandboxPath.consequence}</p>
+                  
+                  <div className="space-y-6">
+                    <div>
+                      <h4 className="text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-4">Differentiated Impact</h4>
+                      <div className="grid grid-cols-2 gap-4">
+                        {[
+                          { label: 'User Adoption', key: 'userAdoption' },
+                          { label: 'Investor Conf.', key: 'investorConfidence' },
+                          { label: 'Cash Runway', key: 'cashRunway' },
+                          { label: 'Team Morale', key: 'teamMorale' },
+                          { label: 'Founder Health', key: 'founderHealth' },
+                          { label: 'Social Impact', key: 'socialImpact' },
+                          { label: 'Revenue Health', key: 'revenueHealth' },
+                          { label: 'Product-Market Fit', key: 'pmf' }
+                        ].map(item => {
+                          const val = metrics[item.key as keyof Metrics];
+                          const delta = lastAppliedSandboxPath.deltas.find(d => d.metric === item.key);
+                          const isPositive = delta && delta.value > 0;
+                          const isNegative = delta && delta.value < 0;
+                          
+                          return (
+                            <motion.div 
+                              key={item.key} 
+                              whileHover={{ scale: 1.02 }}
+                              className={`p-4 rounded-2xl border-[0.5px] transition-all relative overflow-hidden ${
+                                isPositive ? 'bg-[#E1F5EE] border-[#1D9E75]/30' : 
+                                isNegative ? 'bg-[#FCE8E8] border-[#E24B4A]/30' : 
+                                'bg-gray-50 border-gray-200'
+                              }`}
+                            >
+                              <div className="flex justify-between items-start mb-1">
+                                <div className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold">{item.label}</div>
+                                {delta && delta.value !== 0 && (
+                                  <div className={`text-[10px] font-black ${delta.value > 0 ? 'text-[#1D9E75]' : 'text-[#E24B4A]'}`}>
+                                    {delta.value > 0 ? '↑' : '↓'} {Math.abs(delta.value)}%
+                                  </div>
+                                )}
+                              </div>
+                              <div className={`text-2xl font-black ${val > 60 ? 'text-[#1D9E75]' : val < 30 ? 'text-[#E24B4A]' : 'text-gray-900'}`}>
+                                {Math.round(val)}%
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+
+                <motion.div 
+                  initial={{ x: 20, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  transition={{ delay: 0.4 }}
+                  className="bg-white border-[0.5px] border-gray-200 p-8 rounded-3xl shadow-xl h-[450px] flex flex-col"
+                >
+                  <h3 className="text-gray-400 font-bold text-[10px] uppercase tracking-widest mb-6">Shift Analysis</h3>
+                  <div className="flex-1">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={[
+                        { name: 'User', before: beforeSandboxMetrics.userAdoption, after: metrics.userAdoption },
+                        { name: 'Investor', before: beforeSandboxMetrics.investorConfidence, after: metrics.investorConfidence },
+                        { name: 'Cash', before: beforeSandboxMetrics.cashRunway, after: metrics.cashRunway },
+                        { name: 'Team', before: beforeSandboxMetrics.teamMorale, after: metrics.teamMorale },
+                        { name: 'Founder', before: beforeSandboxMetrics.founderHealth, after: metrics.founderHealth },
+                        { name: 'Social', before: beforeSandboxMetrics.socialImpact, after: metrics.socialImpact },
+                        { name: 'Revenue', before: beforeSandboxMetrics.revenueHealth, after: metrics.revenueHealth },
+                        { name: 'PMF', before: beforeSandboxMetrics.pmf, after: metrics.pmf },
+                      ]} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F3F4F6" />
+                        <XAxis 
+                          dataKey="name" 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#9CA3AF', fontSize: 10, fontWeight: 600 }}
+                          dy={10}
+                        />
+                        <YAxis 
+                          domain={[0, 100]} 
+                          axisLine={false} 
+                          tickLine={false} 
+                          tick={{ fill: '#9CA3AF', fontSize: 10 }}
+                          dx={-10}
+                        />
+                        <RechartsTooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', fontSize: '12px', padding: '12px' }}
+                          cursor={{ stroke: '#E5E7EB', strokeWidth: 1 }}
+                        />
+                        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: '30px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }} />
+                        <Line 
+                          type="monotone" 
+                          name="Previous" 
+                          dataKey="before" 
+                          stroke="#D1D5DB" 
+                          strokeWidth={2} 
+                          dot={{ r: 4, fill: '#D1D5DB', strokeWidth: 0 }} 
+                          activeDot={{ r: 6 }}
+                          strokeDasharray="5 5"
+                        />
+                        <Line 
+                          type="monotone" 
+                          name="Refined" 
+                          dataKey="after" 
+                          stroke={currentTheme.primary} 
+                          strokeWidth={4} 
+                          dot={{ r: 6, fill: currentTheme.primary, strokeWidth: 2, stroke: '#fff' }} 
+                          activeDot={{ r: 8, strokeWidth: 0 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-6 p-4 rounded-2xl flex items-center gap-3" style={{ backgroundColor: `${currentTheme.primary}10` }}>
+                    <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm" style={{ color: currentTheme.primary }}>
+                      <TrendingUp size={20} />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: currentTheme.primary }}>Overall Trend</div>
+                      <div className="text-xs font-medium" style={{ color: `${currentTheme.primary}CC` }}>
+                        {metrics.pmf > beforeSandboxMetrics.pmf ? "Your strategy has significantly improved Product-Market Fit." : "This path prioritizes immediate stability over long-term PMF."}
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+
+              <motion.div 
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.5 }}
+                className="flex justify-center pt-6"
+              >
+                <button 
+                  onClick={() => setShowSandboxSummary(false)}
+                  className="px-12 py-5 bg-gray-900 text-white rounded-2xl font-black text-lg shadow-2xl shadow-black/20 hover:bg-black hover:scale-105 transition-all flex items-center justify-center gap-3"
+                >
+                  Continue Simulation <ChevronRight size={20} />
+                </button>
+              </motion.div>
             </motion.div>
           ) : gameState === 'debrief' ? (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -1672,17 +1542,11 @@ export default function App() {
                 </button>
               </div>
             </motion.div>
-          ) : isLoadingScenario ? (
+          ) : isLoadingScenario || !currentScenario ? (
             <div className="h-full flex flex-col items-center justify-center py-20 text-center">
               <Loader2 className="w-10 h-10 text-[#7F77DD] animate-spin mb-4" />
-              <h3 className="text-lg font-bold text-gray-900">Simulating next challenge...</h3>
-              <p className="text-muted-foreground text-xs mt-1">Calculating the trajectory for HostMate in {city}.</p>
-            </div>
-          ) : !currentScenario && evaluation ? (
-            /* FALLBACK TO EVALUATION IF NO SCENARIO YET */
-            <div className="flex flex-col items-center justify-center py-20">
-               <Loader2 className="w-8 h-8 text-[#7F77DD] animate-spin mb-4" />
-               <p className="text-gray-500 font-medium">Finalizing your strategic dashboard...</p>
+              <h3 className="text-lg font-bold text-gray-900">Generating next scenario...</h3>
+              <p className="text-muted-foreground text-xs mt-1">Gemini is analyzing your startup's trajectory in {city}.</p>
             </div>
           ) : (
             <>
@@ -1690,13 +1554,13 @@ export default function App() {
                 <div className="inline-block px-2 py-1 text-[10px] font-bold rounded uppercase tracking-widest mb-4" style={{ backgroundColor: `${currentTheme.primary}20`, color: currentTheme.primary }}>
                   Scenario {history.length + 1}
                 </div>
-                <h2 className="text-2xl font-bold text-gray-900 mb-4 leading-tight">{currentScenario?.title}</h2>
-                <p className="text-gray-600 mb-6 leading-relaxed">{currentScenario?.description}</p>
-                <p className="text-gray-900 font-bold text-[14px]">{currentScenario?.question}</p>
+                <h2 className="text-2xl font-bold text-gray-900 mb-4 leading-tight">{currentScenario.title}</h2>
+                <p className="text-gray-600 mb-6 leading-relaxed">{currentScenario.description}</p>
+                <p className="text-gray-900 font-bold text-[14px]">{currentScenario.question}</p>
               </div>
 
               <div className="grid gap-4 mb-8">
-                {currentScenario?.options.map(option => (
+                {currentScenario.options.map(option => (
                   <button
                     key={option.id}
                     disabled={!!selectedOptionId}
@@ -2125,30 +1989,24 @@ export default function App() {
                               });
 
                               return (
-                                <div className={`p-5 rounded-2xl border-[0.5px] ${p.color} ${p.bg} shadow-sm flex flex-col`}>
+                                <div key={p.key} className={`p-5 rounded-2xl border-[0.5px] ${p.color} ${p.bg} shadow-sm flex flex-col`}>
                                   <div className={`flex items-center gap-2 text-[10px] uppercase font-bold tracking-widest ${p.text} mb-3`}>
                                     {p.icon} {p.path.title}
                                   </div>
-                                  <p className="text-xs font-bold leading-relaxed mb-4">{p.path.consequence}</p>
+                                  <p className="text-xs leading-relaxed mb-4 flex-1">{p.path.consequence}</p>
                                   
-                                  {p.path.detailedAnalysis && (
-                                    <div className="mb-6 p-4 rounded-xl bg-white/50 border border-white/50 text-[11px] leading-relaxed sandbox-timeline overflow-hidden">
-                                      <ReactMarkdown>{p.path.detailedAnalysis}</ReactMarkdown>
-                                    </div>
-                                  )}
-
                                   <div className="space-y-3 mb-6">
-                                    <h5 className="text-[9px] uppercase font-bold text-gray-400 tracking-wider">Projected Metric Shift</h5>
+                                    <h5 className="text-[9px] uppercase font-bold text-gray-400 tracking-wider">Projected Dashboard</h5>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                                       {[
                                         { label: 'User Adoption', key: 'userAdoption' },
                                         { label: 'Investor Conf.', key: 'investorConfidence' },
                                         { label: 'Cash Runway', key: 'cashRunway' },
-                                        { label: 'PMFit', key: 'pmf' },
+                                        { label: 'Team Morale', key: 'teamMorale' },
                                         { label: 'Founder Health', key: 'founderHealth' },
                                         { label: 'Social Impact', key: 'socialImpact' },
-                                        { label: 'Revenue', key: 'revenueHealth' },
-                                        { label: 'Morale', key: 'teamMorale' }
+                                        { label: 'Revenue Health', key: 'revenueHealth' },
+                                        { label: 'Product-Market Fit', key: 'pmf' }
                                       ].map(m => {
                                         const delta = p.path.deltas.find(d => d.metric === m.key);
                                         const val = projectedMetrics[m.key as keyof Metrics];
@@ -2160,13 +2018,13 @@ export default function App() {
                                                 <span className="text-[8px] font-mono">{Math.round(val)}%</span>
                                                 {delta && delta.value !== 0 && (
                                                   <span className={`text-[8px] font-bold ${delta.value > 0 ? 'text-[#1D9E75]' : 'text-[#E24B4A]'}`}>
-                                                    {delta.value > 0 ? '↑' : '↓'}
+                                                    ({delta.value > 0 ? '+' : ''}{delta.value})
                                                   </span>
                                                 )}
                                               </div>
                                             </div>
                                             <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
-                                              <div className={`h-full ${delta && delta.value > 0 ? 'bg-[#1D9E75]' : delta && delta.value < 0 ? 'bg-[#E24B4A]' : 'bg-gray-400'}`} style={{ width: `${val}%` }} />
+                                              <div className="h-full bg-gray-400" style={{ width: `${val}%` }} />
                                             </div>
                                           </div>
                                         );
@@ -2182,7 +2040,7 @@ export default function App() {
                                         : 'bg-gray-900 text-white hover:bg-black shadow-black/30'
                                     } hover:scale-[1.02] active:scale-95`}
                                   >
-                                    Select this path
+                                    Commit to this path
                                   </button>
                                 </div>
                               );
